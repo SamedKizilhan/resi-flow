@@ -25,8 +25,7 @@ from protocol import (
     PKT_ASK, PKT_REPLY, PKT_MESSAGE,
     PKT_DATA, PKT_DATA_ACK,
     PKT_SOS, PKT_LOCATION,
-    PKT_FILE_META, PKT_FILE_CHUNK,
-    FLAG_EOF,
+    PKT_FILE_META, PKT_FILE_CHUNK, PKT_FILE_DONE,
     unpack_header,
     pack_ask, unpack_ask,
     pack_reply, unpack_reply,
@@ -35,6 +34,7 @@ from protocol import (
     pack_location, unpack_location,
     pack_file_meta, unpack_file_meta,
     pack_file_chunk, unpack_file_chunk,
+    pack_file_done, unpack_file_done,
     unpack_data, unpack_data_ack,
     unpack_heartbeat,
 )
@@ -112,6 +112,8 @@ class ResilienceNode:
 
         # Incoming file buffers
         self._incoming_files: dict[str, _IncomingFile] = {}  # sender_ip -> state
+        self._file_done_events: dict[tuple[str, str], threading.Event] = {}
+        self._file_done_lock = threading.Lock()
 
         # Pre-allocated UDP socket (shared for all UDP ops)
         self._udp_sock: socket.socket = None
@@ -346,6 +348,8 @@ class ResilienceNode:
             with self.peers_lock:
                 name = self.peers.get(sender_ip, sender_ip)
             self._display_location(name, sender_ip, lat, lon)
+        elif pkt_type == PKT_FILE_DONE:
+            self._handle_file_done(sender_ip, unpack_file_done(payload))
 
     def _udp_listener(self) -> None:
         while self._running:
@@ -404,6 +408,9 @@ class ResilienceNode:
                 with self.peers_lock:
                     name = self.peers.get(sender_ip, sender_ip)
                 self._display_location(name, sender_ip, lat, lon)
+
+            elif pkt_type == PKT_FILE_DONE:
+                self._handle_file_done(sender_ip, unpack_file_done(payload))
 
             elif pkt_type == PKT_MESSAGE:
                 text = unpack_message(payload)
@@ -481,7 +488,13 @@ class ResilienceNode:
             incoming = self._incoming_files.get(sender_ip)
             if incoming:
                 incoming.chunks[chunk_seq] = chunk_data
-                if inner_flags & FLAG_EOF:
+                if len(incoming.chunks) == incoming.total_chunks:
+                    self._safe_print(
+                        f"[*] All file chunks received from {name}: "
+                        f"'{incoming.filename}' "
+                        f"({incoming.total_chunks}/{incoming.total_chunks})",
+                        prompt=True,
+                    )
                     self._save_incoming_file(incoming, name, sender_ip)
 
     def _save_incoming_file(self, incoming: _IncomingFile,
@@ -494,14 +507,25 @@ class ResilienceNode:
                     chunk = incoming.chunks.get(i, b"")
                     f.write(chunk)
             self._safe_print(
-                f"[*] File '{incoming.filename}' from {sender_name} "
-                f"saved as '{save_name}'",
+                f"[*] File constructed from received chunks: "
+                f"'{incoming.filename}' saved as '{save_name}'",
                 prompt=True,
             )
+            done = pack_file_done(incoming.filename)
+            for _ in range(3):
+                self._send_udp_raw(sender_ip, done)
+                time.sleep(0.05)
         except Exception as e:
             self._safe_print(f"[!] Failed to save file: {e}", prompt=True)
         finally:
             self._incoming_files.pop(sender_ip, None)
+
+    def _handle_file_done(self, sender_ip: str, filename: str) -> None:
+        key = (sender_ip, filename)
+        with self._file_done_lock:
+            event = self._file_done_events.get(key)
+        if event:
+            event.set()
 
     # ================================================================
     #  Display helpers
@@ -598,34 +622,55 @@ class ResilienceNode:
 
         total = len(chunks)
         sender = self._get_or_create_sender(target_ip)
+        done_key = (target_ip, filename)
+        done_event = threading.Event()
+        with self._file_done_lock:
+            self._file_done_events[done_key] = done_event
 
-        # Announce file transfer
-        meta = pack_file_meta(filename, total, len(file_data))
-        sender.send(meta)
+        try:
+            # Announce file transfer
+            meta = pack_file_meta(filename, total, len(file_data))
+            sender.send(meta)
 
-        self._safe_print(
-            f"[*] Sending '{filename}' ({len(file_data)} bytes, "
-            f"{total} chunks) to {target_ip}..."
-        )
+            self._safe_print(
+                f"[*] Sending '{filename}' ({len(file_data)} bytes, "
+                f"{total} chunks) to {target_ip}..."
+            )
 
-        start = time.time()
-        for i, chunk in enumerate(chunks):
-            is_eof = (i == total - 1)
-            inner = pack_file_chunk(i + 1, chunk, is_eof)
-            sender.send(inner)
+            start = time.time()
+            for i, chunk in enumerate(chunks):
+                is_eof = (i == total - 1)
+                inner = pack_file_chunk(i + 1, chunk, is_eof)
+                sender.send(inner)
 
-        # Wait for all ACKs
-        sender.wait_complete(timeout=60.0)
-        duration = time.time() - start
-        if duration > 0:
-            throughput = (len(file_data) * 8 / duration) / 1_000_000
-        else:
-            throughput = 0.0
+            # Wait for transport ACKs, then for receiver's saved-file notice.
+            acked = sender.wait_complete(timeout=60.0)
+            saved = done_event.wait(timeout=10.0) if acked else False
+            duration = time.time() - start
+            if duration > 0:
+                throughput = (len(file_data) * 8 / duration) / 1_000_000
+            else:
+                throughput = 0.0
 
-        self._safe_print(
-            f"[*] File '{filename}' sent! "
-            f"Time: {duration:.2f}s | Throughput: {throughput:.2f} Mbps"
-        )
+            if saved:
+                self._safe_print(
+                    f"[*] File transfer completed: '{filename}' saved by "
+                    f"receiver. Time: {duration:.2f}s | "
+                    f"Throughput: {throughput:.2f} Mbps"
+                )
+            elif acked:
+                self._safe_print(
+                    f"[!] File packets were ACKed, but receiver did not "
+                    f"confirm saving '{filename}' within 10s."
+                )
+            else:
+                self._safe_print(
+                    f"[!] File transfer timed out before all ACKs arrived: "
+                    f"'{filename}'. Time: {duration:.2f}s"
+                )
+        finally:
+            with self._file_done_lock:
+                self._file_done_events.pop(done_key, None)
 
     # ================================================================
     #  State machine (protocol pivot)

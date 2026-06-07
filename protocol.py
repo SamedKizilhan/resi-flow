@@ -34,6 +34,7 @@ PKT_SOS           = 0x40
 PKT_LOCATION      = 0x41
 PKT_FILE_META     = 0x50   # File transfer announcement
 PKT_FILE_CHUNK    = 0x51   # File chunk within reliable stream
+PKT_FILE_DONE     = 0x52   # Receiver confirms file was saved
 
 # Header flags (bitfield)
 FLAG_PRIORITY = 0x80
@@ -54,6 +55,7 @@ PKT_NAMES = {
     PKT_LOCATION:      "LOCATION",
     PKT_FILE_META:     "FILE_META",
     PKT_FILE_CHUNK:    "FILE_CHUNK",
+    PKT_FILE_DONE:     "FILE_DONE",
 }
 
 
@@ -233,3 +235,11 @@ def unpack_file_chunk(payload: bytes):
     """Returns (chunk_seq, raw_bytes)."""
     (chunk_seq,) = struct.unpack("!I", payload[:4])
     return chunk_seq, payload[4:]
+
+
+def pack_file_done(filename: str) -> bytes:
+    return pack_packet(PKT_FILE_DONE, filename.encode("utf-8"))
+
+
+def unpack_file_done(payload: bytes) -> str:
+    return payload.decode("utf-8")
