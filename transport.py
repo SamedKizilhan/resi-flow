@@ -257,15 +257,22 @@ class ReliableUDPReceiver:
             # Buffer the packet
             self._buffer[seq] = (data, flags)
 
-            # Deliver consecutive packets in order
-            while self._expected_seq in self._buffer:
-                d, f = self._buffer.pop(self._expected_seq)
-                self._delivered.add(self._expected_seq)
-                try:
-                    self._on_deliver(self._expected_seq, d, f)
-                except Exception:
-                    pass
-                self._expected_seq += 1
+            # Deliver consecutive normal packets in order. Priority packets may
+            # already have been delivered early, so skip over those sequence
+            # numbers when the normal stream catches up.
+            while True:
+                if self._expected_seq in self._buffer:
+                    d, f = self._buffer.pop(self._expected_seq)
+                    self._delivered.add(self._expected_seq)
+                    try:
+                        self._on_deliver(self._expected_seq, d, f)
+                    except Exception:
+                        pass
+                    self._expected_seq += 1
+                elif self._expected_seq in self._delivered:
+                    self._expected_seq += 1
+                else:
+                    break
 
             # Trim delivered set to prevent unbounded growth
             if len(self._delivered) > 1000:
