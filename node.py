@@ -426,10 +426,9 @@ class ResilienceNode:
         if ip not in self._senders:
             sender = ReliableUDPSender(
                 send_func=self._make_udp_sender(ip),
-                window_size=10,
-                base_timeout=0.5,
+                window_size=64,
+                base_timeout=0.25,
                 max_timeout=5.0,
-                simulator=self.simulator,
             )
             sender.start()
             self._senders[ip] = sender
@@ -440,7 +439,7 @@ class ResilienceNode:
             self._receivers[ip] = ReliableUDPReceiver(
                 on_deliver=lambda seq, data, flags, _ip=ip:
                     self._on_data_deliver(seq, data, flags, _ip),
-                max_rwnd=10,
+                max_rwnd=64,
             )
         return self._receivers[ip]
 
@@ -644,7 +643,7 @@ class ResilienceNode:
                 sender.send(inner)
 
             # Wait for transport ACKs, then for receiver's saved-file notice.
-            acked = sender.wait_complete(timeout=60.0)
+            acked = sender.wait_complete(timeout=600.0)
             saved = done_event.wait(timeout=10.0) if acked else False
             duration = time.time() - start
             if duration > 0:
