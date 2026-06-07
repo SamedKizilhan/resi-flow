@@ -114,8 +114,22 @@ Hello, status report?                      All stable for now.
 # Both nodes will show:
 #   [PIVOT] NORMAL --> CRISIS (Reliable UDP)
 
-# Send emergency SOS (priority bypass)
+# Demonstrate SOS priority bypass under heavy traffic:
+# Step 1 — create congestion with a large file transfer
+                                           /sendfile test_1mb.bin
+
+# Step 2 — while the file is in flight, send a regular message
+                                           Sending supplies now.
+# (This message does NOT appear on Terminal 1 yet —
+#  it is queued behind the file chunks in the sliding window)
+
+# Step 3 — send an SOS during the same transfer
                                            /sos Need tourniquets and hemostatic agents!
+# (This appears on Terminal 1 IMMEDIATELY, before the file finishes —
+#  SOS bypasses the window via the priority queue)
+
+# Step 4 — once the file transfer completes, the earlier regular
+#           message finally arrives on Terminal 1.
 
 # Send coordinates
                                            /location 40.9869 29.0259
@@ -139,3 +153,10 @@ Hello, status report?                      All stable for now.
 | Network monitoring | None | EMA-based RTT & loss telemetry |
 | Emergency priority | None | /sos and /location with queue bypass |
 | Simulation | None | Built-in loss/delay injection |
+
+---
+
+## Challenges We Overcame
+
+**Compounding packet loss when simulating on both sides.**
+Our initial approach was to run the loss simulator on both peers simultaneously, assuming each side would independently experience the configured drop rate. However, because every packet in our protocol (data chunks, ACKs, NACKs, heartbeats) must survive two independent probabilistic drop decisions — one on the sender and one on the receiver — the effective end-to-end loss was far higher than intended. For example, setting 50% loss on both sides resulted in an observed loss closer to 75%, because a packet had to get through both coin-flips to count as delivered. This caused `sendfile` to time out even on small files, since ACKs were being dropped just as aggressively as data packets. We resolved this by applying the simulator on one side only, which kept the observed loss in line with the configured value and made the demo reproducible.
