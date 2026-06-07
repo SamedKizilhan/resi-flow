@@ -16,6 +16,7 @@ import threading
 import time
 
 from protocol import (
+    FLAG_PRIORITY,
     pack_data, unpack_data,
     pack_data_ack, unpack_data_ack,
 )
@@ -103,6 +104,9 @@ class ReliableUDPSender:
 
         Returns the assigned sequence number.
         """
+        if priority:
+            flags |= FLAG_PRIORITY
+
         with self._lock:
             seq = self._next_seq
             self._next_seq += 1
@@ -239,6 +243,17 @@ class ReliableUDPReceiver:
             if seq in self._delivered:
                 return self._build_ack(seq)
 
+            # Priority packets intentionally bypass the normal in-order stream.
+            # Otherwise an SOS sent during a large file transfer can create a
+            # huge sequence gap and wait behind ordinary file chunks.
+            if flags & FLAG_PRIORITY:
+                self._delivered.add(seq)
+                try:
+                    self._on_deliver(seq, data, flags)
+                except Exception:
+                    pass
+                return self._build_ack(seq)
+
             # Buffer the packet
             self._buffer[seq] = (data, flags)
 
@@ -261,12 +276,15 @@ class ReliableUDPReceiver:
 
     def _build_ack(self, acked_seq: int) -> bytes:
         """Build a selective ACK reporting gaps (NACKs) in the receive window."""
+        max_nacks = 256
         nacks = []
         if self._buffer:
             max_buffered = max(self._buffer.keys())
             for s in range(self._expected_seq, max_buffered):
                 if s not in self._buffer and s not in self._delivered:
                     nacks.append(s)
+                    if len(nacks) >= max_nacks:
+                        break
 
         rwnd = max(1, self._max_rwnd - len(self._buffer))
         return pack_data_ack(acked_seq, rwnd, nacks)
