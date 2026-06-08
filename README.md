@@ -26,6 +26,8 @@ ResilienceFlow is a peer-to-peer communication system designed for disaster scen
 
 ## Quick Start
 
+### Terminal (CLI)
+
 On **each machine** (same LAN):
 
 ```bash
@@ -37,18 +39,45 @@ python3 main.py
 3. Select a peer and start chatting.
 4. Use `/simulate loss 40` on one side to trigger the protocol pivot demo.
 
+### Graphical UI (Tkinter)
+
+If you prefer a point-and-click interface, run the bundled Tkinter GUI instead:
+
+```bash
+python3 ui.py
+```
+
+The GUI exposes **all** the same features as the CLI through a windowed interface:
+
+| UI Element | Equivalent CLI action |
+|---|---|
+| **Name / Port** fields + **Start** button | Entering your name and starting the node |
+| **Scan** button | `/scan` — rediscover peers on the network |
+| **Peers** list + **Switch** button | `/switch` — select chat target |
+| **List** / **Status** buttons | `/list` and `/status` |
+| **Message** field + button | Sending a regular chat message |
+| **SOS** field + button | `/sos <message>` |
+| **Location** fields + button | `/location <lat> <lon>` |
+| **Send File** field + **Browse** + button | `/sendfile <path>` |
+| **Sim Loss** / **Sim Delay** fields + buttons | `/simulate loss` and `/simulate delay` |
+| **Sim Reset** / **Sim Status** buttons | `/simulate reset` and `/simulate status` |
+
+All node output (received messages, protocol pivots, telemetry events) appears in the **Output** panel in real time.
+
+> **Note:** `ui.py` uses only the Python standard library (`tkinter`). No extra packages are needed.
+
 ---
 
 ## Architecture
 
 ```
 main.py          Entry point + CLI shell
+ui.py            Tkinter graphical interface (alternative to main.py)
 node.py          ResilienceNode orchestrator, state machine (NORMAL/CRISIS)
 protocol.py      Binary packet format (struct-packed, 5-byte header)
 telemetry.py     Heartbeat probes, RTT/loss EMA calculation
 transport.py     Reliable UDP: Selective-Repeat ARQ, sliding window
 simulator.py     Application-layer packet loss & delay injection
-chat.py          Original Workshop 4 code (kept for reference)
 ```
 
 ### State Machine
